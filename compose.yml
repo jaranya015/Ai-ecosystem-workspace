@@ -16,5 +16,31 @@ services:
       timeout: 5s 
       retries: 5 
 
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres-db
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: ai_workspace_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgresql-data:/var/lib/postgresql/data
+
+  label-studio:
+    image: heartexlabs/label-studio:latest
+    container_name: label-studio
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    environment:
+      - DJANGO_DB_URL=postgres://admin:password123@postgres:5432/ai_workspace_db
+      - LABEL_STUDIO_USERNAME=faiijaran0159@gmail.com
+      - LABEL_STUDIO_PASSWORD=password123
+
 volumes: 
   redis-data:
+  postgresql-data:
+    name: postgresql-data
