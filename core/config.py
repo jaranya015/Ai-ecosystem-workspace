@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./sql_app.db"
     SECRET_KEY: str = "super-secret-key-change-me-in-production"
 
+    LABEL_STUDIO_URL: str = "http://localhost:8080"
+    LABEL_STUDIO_API_KEY: str
+
     # 2. ตั้งค่าให้ Pydantic อ่านค่าจากไฟล์ .env อัตโนมัติ
     model_config = SettingsConfigDict(
         env_file=".env",            # อ่านไฟล์ชื่อ .env
