@@ -1,6 +1,6 @@
 services: 
   redis: 
-    image: redis:8.8.0-alpine 
+    image: redis:7.2-alpine 
     container_name: redis 
     restart: unless-stopped 
     ports: 
@@ -19,28 +19,58 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: postgres-db
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password123
-      POSTGRES_DB: ai_workspace_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
       - postgresql-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   label-studio:
     image: heartexlabs/label-studio:latest
     container_name: label-studio
+    restart: unless-stopped
     ports:
       - "8080:8080"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
-      - DJANGO_DB_URL=postgres://admin:password123@postgres:5432/ai_workspace_db
-      - LABEL_STUDIO_USERNAME=faiijaran0159@gmail.com
-      - LABEL_STUDIO_PASSWORD=password123
+      - DJANGO_DB=default
+      - POSTGRES_NAME=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_SSLMODE=disable
+      - LABEL_STUDIO_USERNAME=${LABEL_STUDIO_USERNAME}
+      - LABEL_STUDIO_PASSWORD=${LABEL_STUDIO_PASSWORD}
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio-server
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: "admin"
+      MINIO_ROOT_PASSWORD: "password1234"
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
 
 volumes: 
   redis-data:
   postgresql-data:
-    name: postgresql-data
+  minio-data:
