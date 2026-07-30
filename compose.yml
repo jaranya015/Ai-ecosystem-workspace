@@ -1,20 +1,15 @@
-services: 
-  redis: 
-    image: redis:7.2-alpine 
-    container_name: redis 
-    restart: unless-stopped 
-    ports: 
-      - "6379:6379" 
-    volumes: 
-      - redis-data:/data 
-    command: > 
-      redis-server 
-      --appendonly yes 
-    healthcheck: 
-      test: ["CMD", "redis-cli", "ping"] 
-      interval: 10s 
-      timeout: 5s 
-      retries: 5 
+services:
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   postgres:
     image: postgres:15-alpine
@@ -26,35 +21,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
-    volumes:
-      - postgresql-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  label-studio:
-    image: heartexlabs/label-studio:latest
-    container_name: label-studio
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      - DJANGO_DB=default
-      - POSTGRES_NAME=${POSTGRES_DB}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_SSLMODE=disable
-      - LABEL_STUDIO_USERNAME=${LABEL_STUDIO_USERNAME}
-      - LABEL_STUDIO_PASSWORD=${LABEL_STUDIO_PASSWORD}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   minio:
     image: minio/minio:latest
@@ -66,11 +37,9 @@ services:
     environment:
       MINIO_ROOT_USER: "admin"
       MINIO_ROOT_PASSWORD: "password1234"
-    volumes:
-      - minio-data:/data
     command: server /data --console-address ":9001"
-
-volumes: 
-  redis-data:
-  postgresql-data:
-  minio-data:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
