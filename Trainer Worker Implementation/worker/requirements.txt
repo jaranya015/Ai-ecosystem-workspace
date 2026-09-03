@@ -6,4 +6,5 @@ datasets==2.18.0
 accelerate==0.28.0
 evaluate==0.4.1
 seqeval==1.2.2
+pyarrow
 torch

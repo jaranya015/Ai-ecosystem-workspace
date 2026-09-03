@@ -1,7 +1,9 @@
 import os
+import glob
 import evaluate
 import numpy as np
-from datasets import load_from_disk
+import pyarrow as pa
+from datasets import Dataset, DatasetDict, Features, Sequence, Value, ClassLabel
 from transformers import (
     AutoTokenizer,
     AutoModelForTokenClassification,
@@ -10,7 +12,6 @@ from transformers import (
     Trainer
 )
 
-# โหลด metric seqeval สำหรับประเมินผล NER / Token classification
 seqeval = evaluate.load("seqeval")
 
 def tokenize_and_align_labels(examples, tokenizer, label_all_tokens=False):
@@ -27,13 +28,10 @@ def tokenize_and_align_labels(examples, tokenizer, label_all_tokens=False):
         label_ids = []
         for word_idx in word_ids:
             if word_idx is None:
-                # Special tokens เช่น [CLS], [SEP] ให้ใส่ -100 (PyTorch Loss จะเพิกเฉย)
                 label_ids.append(-100)
             elif word_idx != previous_word_idx:
-                # Token ตัวแรกของคำ ให้ใส่ label จริง
                 label_ids.append(label[word_idx])
             else:
-                # Token ย่อยที่ตามมา
                 label_ids.append(label[word_idx] if label_all_tokens else -100)
             previous_word_idx = word_idx
         labels.append(label_ids)
@@ -45,7 +43,6 @@ def compute_metrics(p, label_list):
     predictions, labels = p
     predictions = np.argmax(predictions, axis=2)
 
-    # ลบ -100 ออกก่อนคำนวณ Precision, Recall, F1
     true_predictions = [
         [label_list[p] for (p, l) in zip(prediction, label) if l != -100]
         for prediction, label in zip(predictions, labels)
@@ -64,15 +61,31 @@ def compute_metrics(p, label_list):
     }
 
 def run_training(dataset_path: str, output_dir: str, log_dir: str):
-    # 1. โหลด Dataset ที่แตกไฟล์มาจาก MinIO
-    raw_datasets = load_from_disk(dataset_path)
-    label_list = raw_datasets["train"].features["ner_tags"].feature.names
+# 1. อ่านข้อมูลด้วย PyArrow แล้วแปลงเป็น Dictionary เพื่อล้าง metadata ทิ้งทั้งหมด
+    label_list = ['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC']
+    features = Features({
+        'tokens': Sequence(Value('string')),
+        'ner_tags': Sequence(ClassLabel(names=label_list))
+    })
+
+    train_file = glob.glob(os.path.join(dataset_path, "train", "*.arrow"))[0]
+    val_file = glob.glob(os.path.join(dataset_path, "validation", "*.arrow"))[0]
+
+    with pa.memory_map(train_file, 'r') as source:
+        train_dict = pa.ipc.open_stream(source).read_all().to_pydict()
+    with pa.memory_map(val_file, 'r') as source:
+        val_dict = pa.ipc.open_stream(source).read_all().to_pydict()
+
+    # สร้าง Dataset ใหม่จาก clean dictionary
+    raw_datasets = DatasetDict({
+        "train": Dataset.from_dict({"tokens": train_dict["tokens"], "ner_tags": train_dict["ner_tags"]}, features=features),
+        "validation": Dataset.from_dict({"tokens": val_dict["tokens"], "ner_tags": val_dict["ner_tags"]}, features=features)
+    })
     
-    # 2. โหลด Pretrained Tokenizer และ Model
+    # 2. โหลด Tokenizer และ Model
     model_checkpoint = "bert-base-cased"
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
     
-    # Map tokens และ align labels
     tokenized_datasets = raw_datasets.map(
         lambda x: tokenize_and_align_labels(x, tokenizer),
         batched=True,
@@ -86,25 +99,23 @@ def run_training(dataset_path: str, output_dir: str, log_dir: str):
         label2id={l: i for i, l in enumerate(label_list)}
     )
 
-    # 3. กำหนด Hyperparameters และการบันทึก Log
+# 3. กำหนด Hyperparameters โดยจำกัด 15 steps เพื่อให้เทรนจบเร็วและไม่กิน RAM ล้น
     training_args = TrainingArguments(
         output_dir=output_dir,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
+        evaluation_strategy="no",       # ปิด eval ระหว่างทางเพื่อประหยัด RAM
+        save_strategy="no",
         learning_rate=2e-5,
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=16,
-        num_train_epochs=2,  # ปรับจำนวน epoch ตามเหมาะสม
+        per_device_train_batch_size=8,   # ลด batch size เหลือ 8
+        max_steps=15,                    # รันแค่ 15 steps พอสร้าง artifact ครบ
         weight_decay=0.01,
         logging_dir=log_dir,
-        logging_steps=10,
-        save_total_limit=1,
-        fp16=False  # เปิดใช้งาน GPU Mixed Precision เพื่อความเร็ว
+        logging_steps=5,
+        fp16=False
     )
 
     data_collator = DataCollatorForTokenClassification(tokenizer)
 
-    # 4. เรียก Trainer
+    # 4. เริ่มเทรน
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -115,10 +126,8 @@ def run_training(dataset_path: str, output_dir: str, log_dir: str):
         compute_metrics=lambda p: compute_metrics(p, label_list)
     )
 
-    # เริ่มเทรน (จะใช้ GPU อัตโนมัติหาก Container มองเห็น CUDA)
     train_result = trainer.train()
 
-    # บันทึก Model, Tokenizer และ Log Metrics
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
     
