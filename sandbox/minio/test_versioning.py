@@ -2,6 +2,7 @@ import os
 from minio import Minio
 from minio.versioningconfig import VersioningConfig, ENABLED
 
+
 # 1. Initialize MinIO Client
 client = Minio(
     "localhost:9000",
