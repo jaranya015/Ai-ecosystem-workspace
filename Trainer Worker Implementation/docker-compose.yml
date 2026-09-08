@@ -1,26 +1,65 @@
-version: '3.8'
-
 services:
+  # 1. Redis Broker สำหรับ Celery Queue
   redis:
     image: redis:7-alpine
     container_name: redis_queue
     ports:
       - "6379:6379"
 
+  # 2. MinIO Object Storage สำหรับเก็บ Datasets & MLflow Artifacts
   minio:
     image: minio/minio:latest
     container_name: minio_storage
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+    command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadminpassword
-    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
 
+  # 3. PostgreSQL Database สำหรับเก็บ Metadata/Runs ของ MLflow
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    environment:
+      POSTGRES_DB: mlflow_db
+      POSTGRES_USER: mlflow_user
+      POSTGRES_PASSWORD: mlflow_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+# 4. MLflow Tracking Server
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.3
+    container_name: mlflow_server
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadminpassword
+    entrypoint: >
+      bash -c "pip install --no-cache-dir psycopg2-binary boto3 &&
+      mlflow server
+      --backend-store-uri postgresql://mlflow_user:mlflow_password@postgres:5432/mlflow_db
+      --default-artifact-root s3://mlflow-artifacts/
+      --host 0.0.0.0
+      --port 5000"
+    depends_on:
+      - postgres
+      - minio
+
+  # 5. FastAPI Application (API Service)
   api:
-    build: ./api
-    container_name: fastapi_service
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: fastapi_api
     ports:
       - "8000:8000"
     environment:
@@ -28,21 +67,26 @@ services:
     depends_on:
       - redis
 
+  # 6. Trainer Worker (Celery Worker สำหรับเทรน)
   worker:
-    build: ./worker
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
     container_name: trainer_worker
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadminpassword
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadminpassword
     depends_on:
       - redis
       - minio
-    #deploy:
-     # resources:
-     #   reservations:
-      #    devices:
-       #     - driver: nvidia
-        #      count: all
-         #     capabilities: [gpu]
+      - mlflow
+
+volumes:
+  minio_data:
+  postgres_data:

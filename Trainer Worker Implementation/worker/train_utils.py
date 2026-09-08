@@ -3,6 +3,8 @@ import glob
 import evaluate
 import numpy as np
 import pyarrow as pa
+import mlflow
+import mlflow.transformers
 from datasets import Dataset, DatasetDict, Features, Sequence, Value, ClassLabel
 from transformers import (
     AutoTokenizer,
@@ -60,8 +62,13 @@ def compute_metrics(p, label_list):
         "accuracy": results["overall_accuracy"],
     }
 
-def run_training(dataset_path: str, output_dir: str, log_dir: str):
-# 1. อ่านข้อมูลด้วย PyArrow แล้วแปลงเป็น Dictionary เพื่อล้าง metadata ทิ้งทั้งหมด
+def run_training(dataset_path: str, output_dir: str, log_dir: str, model_version: str = "v1.0"):
+    # 1. เชื่อมต่อ MLflow Tracking Server
+    mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+    mlflow.set_tracking_uri(mlflow_uri)
+    mlflow.set_experiment("NER_BERT_Training")
+
+    # 2. โหลดข้อมูลจาก Arrow Files
     label_list = ['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC']
     features = Features({
         'tokens': Sequence(Value('string')),
@@ -76,13 +83,12 @@ def run_training(dataset_path: str, output_dir: str, log_dir: str):
     with pa.memory_map(val_file, 'r') as source:
         val_dict = pa.ipc.open_stream(source).read_all().to_pydict()
 
-    # สร้าง Dataset ใหม่จาก clean dictionary
     raw_datasets = DatasetDict({
         "train": Dataset.from_dict({"tokens": train_dict["tokens"], "ner_tags": train_dict["ner_tags"]}, features=features),
         "validation": Dataset.from_dict({"tokens": val_dict["tokens"], "ner_tags": val_dict["ner_tags"]}, features=features)
     })
     
-    # 2. โหลด Tokenizer และ Model
+    # 3. โหลด Pretrained Tokenizer และ Model
     model_checkpoint = "bert-base-cased"
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
     
@@ -99,14 +105,14 @@ def run_training(dataset_path: str, output_dir: str, log_dir: str):
         label2id={l: i for i, l in enumerate(label_list)}
     )
 
-# 3. กำหนด Hyperparameters โดยจำกัด 15 steps เพื่อให้เทรนจบเร็วและไม่กิน RAM ล้น
+    # 4. Hyperparameters (15 steps เพื่อความรวดเร็วและไม่เปลือง RAM)
     training_args = TrainingArguments(
         output_dir=output_dir,
-        evaluation_strategy="no",       # ปิด eval ระหว่างทางเพื่อประหยัด RAM
+        evaluation_strategy="no",
         save_strategy="no",
         learning_rate=2e-5,
-        per_device_train_batch_size=8,   # ลด batch size เหลือ 8
-        max_steps=15,                    # รันแค่ 15 steps พอสร้าง artifact ครบ
+        per_device_train_batch_size=8,
+        max_steps=15,
         weight_decay=0.01,
         logging_dir=log_dir,
         logging_steps=5,
@@ -115,7 +121,6 @@ def run_training(dataset_path: str, output_dir: str, log_dir: str):
 
     data_collator = DataCollatorForTokenClassification(tokenizer)
 
-    # 4. เริ่มเทรน
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -126,13 +131,33 @@ def run_training(dataset_path: str, output_dir: str, log_dir: str):
         compute_metrics=lambda p: compute_metrics(p, label_list)
     )
 
-    train_result = trainer.train()
+    # 5. เริ่ม Track ด้วย MLflow
+    with mlflow.start_run(run_name=f"Run_{model_version}"):
+        mlflow.log_param("model_checkpoint", model_checkpoint)
+        mlflow.log_param("learning_rate", 2e-5)
+        mlflow.log_param("batch_size", 8)
+        mlflow.log_param("max_steps", 15)
 
-    trainer.save_model(output_dir)
-    tokenizer.save_pretrained(output_dir)
-    
-    metrics = train_result.metrics
-    trainer.log_metrics("train", metrics)
-    trainer.save_metrics("train", metrics)
+        train_result = trainer.train()
+
+        trainer.save_model(output_dir)
+        tokenizer.save_pretrained(output_dir)
+        
+        metrics = train_result.metrics
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
+
+        # Log Metrics เข้า MLflow
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                mlflow.log_metric(key, value)
+
+        # บันทึก Model ลง MLflow พร้อม Register ในชื่อ "ner_bert_model"
+        print(f"[{model_version}] Logging and registering model to MLflow...")
+        mlflow.transformers.log_model(
+            transformers_model={"model": model, "tokenizer": tokenizer},
+            artifact_path="model",
+            registered_model_name="ner_bert_model"
+        )
 
     return metrics

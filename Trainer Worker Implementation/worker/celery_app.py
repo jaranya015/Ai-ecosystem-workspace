@@ -42,8 +42,10 @@ def train_model_task(model_version: str):
         metrics = run_training(
             dataset_path=dataset_extracted,
             output_dir=output_model_dir,
-            log_dir=log_dir
+            log_dir=log_dir,
+            model_version=model_version
         )
+        
         print(f"[{model_version}] Training finished: {metrics}")
 
         # บีบอัด Model & Logs ส่งกลับ MinIO
