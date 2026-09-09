@@ -87,11 +87,6 @@ services:
       - minio
       - mlflow
 
-volumes:
-  minio_data:
-  postgres_data:
-
-
 # 7. Inference Worker
   inference_worker:
     build:
@@ -108,3 +103,7 @@ volumes:
       - redis
       - minio
       - mlflow
+
+volumes:
+  minio_data:
+  postgres_data:
