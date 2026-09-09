@@ -152,12 +152,13 @@ def run_training(dataset_path: str, output_dir: str, log_dir: str, model_version
             if isinstance(value, (int, float)):
                 mlflow.log_metric(key, value)
 
-        # บันทึก Model ลง MLflow พร้อม Register ในชื่อ "ner_bert_model"
-        print(f"[{model_version}] Logging and registering model to MLflow...")
-        mlflow.transformers.log_model(
-            transformers_model={"model": model, "tokenizer": tokenizer},
-            artifact_path="model",
-            registered_model_name="ner_bert_model"
-        )
+        # บันทึก Model Artifacts เข้า MLflow และ Register โมเดล
+
+        print(f"[{model_version}] Logging artifacts and registering model to MLflow...")
+        mlflow.log_artifacts(output_dir, artifact_path="model")
+        
+        run_id = mlflow.active_run().info.run_id
+        model_uri = f"runs:/{run_id}/model"
+        mlflow.register_model(model_uri, "ner_bert_model")
 
     return metrics
